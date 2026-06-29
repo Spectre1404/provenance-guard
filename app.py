@@ -10,14 +10,26 @@ import uuid
 from datetime import datetime, timezone
 
 from flask import Flask, jsonify, request
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
 
 import db
+import labels
 import scoring
 from signals.llm import score_llm
 from signals.stylometry import score_stylometry
 
 app = Flask(__name__)
 db.init_db()
+
+# Rate limiting. Limits are applied per-route (see /submit). Keyed by client IP.
+# In-memory storage is sufficient for local/dev use.
+limiter = Limiter(
+    get_remote_address,
+    app=app,
+    default_limits=[],
+    storage_uri="memory://",
+)
 
 
 def _now_iso():
@@ -28,6 +40,7 @@ def _now_iso():
 
 
 @app.route("/submit", methods=["POST"])
+@limiter.limit("10 per minute;100 per day")
 def submit():
     data = request.get_json(silent=True) or {}
     text = (data.get("text") or "").strip()
@@ -46,7 +59,7 @@ def submit():
 
     ai_probability = result["ai_probability"]
     attribution = result["attribution"]
-    label = "(placeholder label — full transparency label arrives in M5)"
+    label = labels.make_label(ai_probability)
 
     db.save_content(
         content_id=content_id,
@@ -81,6 +94,46 @@ def submit():
         "confidence_level": result["confidence_level"],
         "signals": {"llm": llm, "stylometry": stylometry},
         "label": label,
+    })
+
+
+@app.route("/appeal", methods=["POST"])
+def appeal():
+    data = request.get_json(silent=True) or {}
+    content_id = (data.get("content_id") or "").strip()
+    reasoning = (data.get("creator_reasoning") or "").strip()
+
+    if not content_id or not reasoning:
+        return jsonify(
+            {"error": "content_id and creator_reasoning are required"}
+        ), 400
+
+    content = db.get_content(content_id)
+    if content is None:
+        return jsonify({"error": f"unknown content_id: {content_id}"}), 404
+
+    timestamp = _now_iso()
+    db.update_status(content_id, "under_review")
+
+    # Log the appeal alongside the original decision so a reviewer has context.
+    db.write_log(
+        content_id=content_id,
+        event_type="appeal",
+        timestamp=timestamp,
+        payload={
+            "creator_id": content["creator_id"],
+            "appeal_reasoning": reasoning,
+            "status": "under_review",
+            "original_attribution": content["attribution"],
+            "original_confidence": content["confidence"],
+        },
+    )
+
+    return jsonify({
+        "content_id": content_id,
+        "status": "under_review",
+        "message": "Your appeal has been received and the content is now "
+                   "under review.",
     })
 
 
