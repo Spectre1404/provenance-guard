@@ -378,9 +378,24 @@ built.
    noisiest) but breaks ties when the other two disagree. The 2-signal weighting
    (`0.65*LLM + 0.35*stylometry`) is retained as a fallback when only two signals
    are available. Thresholds (0.40 / 0.75) are unchanged.
-2. **Provenance certificate.** A `POST /verify-human` step that grants a
-   creator a "Verified Human" credential (stored, displayed on their content via
-   the label), earned through an extra verification action.
+2. **Provenance certificate.** ✅ **BUILT.** A "Verified Human" credential a
+   creator earns through an extra verification step.
+   - **`POST /verify-human`** `{creator_id, sample_text}` — the creator submits a
+     live writing sample (minimum length enforced so the signals are
+     meaningful). The full 3-signal pipeline runs on the sample; if it scores
+     `likely_human` (high-confidence human), a certificate is issued, otherwise
+     the request is rejected with the reason.
+   - **Tamper-evident credential:** the certificate carries an HMAC-SHA256
+     signature over `creator_id|certificate_id|issued_at` using a server secret
+     (`PROVENANCE_SECRET`, stdlib `hmac`). `GET /certificate/<creator_id>`
+     recomputes the HMAC and returns a `valid` flag, so a tampered credential is
+     detectable.
+   - **Display:** when a creator holding a valid certificate submits content,
+     `/submit` returns `verified_human: true` and the transparency label is
+     prefixed with `🏅 Verified Human Creator — `.
+   - **Storage / privacy:** a `certificates` table stores
+     `creator_id, certificate_id, issued_at, signature, status` — never the raw
+     verification sample text.
 3. **Analytics dashboard.** A `GET /analytics` view aggregating from SQLite:
    distribution of attributions, appeal rate, and one more metric (e.g. average
    confidence over time or per creator).

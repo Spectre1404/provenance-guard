@@ -48,9 +48,23 @@ def init_db():
             CREATE TABLE IF NOT EXISTS audit_log (
                 id           INTEGER PRIMARY KEY AUTOINCREMENT,
                 content_id   TEXT NOT NULL,
-                event_type   TEXT NOT NULL,   -- 'classification' | 'appeal'
+                event_type   TEXT NOT NULL,   -- 'classification' | 'appeal' | 'verification'
                 timestamp    TEXT NOT NULL,
                 payload      TEXT NOT NULL    -- JSON blob of the full event
+            )
+            """
+        )
+        # Provenance certificates ("Verified Human" credential). We deliberately
+        # store NO raw verification sample text here — only the decision and its
+        # tamper-evident signature.
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS certificates (
+                creator_id      TEXT PRIMARY KEY,
+                certificate_id  TEXT NOT NULL,
+                issued_at       TEXT NOT NULL,
+                signature       TEXT NOT NULL,
+                status          TEXT NOT NULL DEFAULT 'valid'
             )
             """
         )
@@ -88,6 +102,29 @@ def update_status(content_id, status):
             "UPDATE content SET status = ? WHERE content_id = ?",
             (status, content_id),
         )
+
+
+def save_certificate(creator_id, certificate_id, issued_at, signature,
+                     status="valid"):
+    """Insert or replace a creator's provenance certificate."""
+    with get_conn() as conn:
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO certificates
+                (creator_id, certificate_id, issued_at, signature, status)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (creator_id, certificate_id, issued_at, signature, status),
+        )
+
+
+def get_certificate(creator_id):
+    """Return a creator's certificate as a dict, or None if none exists."""
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM certificates WHERE creator_id = ?", (creator_id,)
+        ).fetchone()
+        return dict(row) if row else None
 
 
 def write_log(content_id, event_type, timestamp, payload):

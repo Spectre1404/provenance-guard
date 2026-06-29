@@ -1,8 +1,11 @@
 """Provenance Guard — Flask application.
 
-Milestone 3 scope: POST /submit (Signal 1 only, placeholder scoring/label) and
-GET /log. Signal 2, real confidence scoring, transparency labels, appeals, and
-rate limiting are layered in across M4-M5.
+Endpoints:
+  POST /submit                  classify content + return transparency label
+  POST /appeal                  contest a classification (status -> under_review)
+  GET  /log                     recent structured audit-log entries
+  POST /verify-human            earn a "Verified Human" provenance certificate
+  GET  /certificate/<creator>   fetch + validate a creator's certificate
 """
 
 import os
@@ -13,12 +16,17 @@ from flask import Flask, jsonify, request
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 
+import certificates
 import db
 import labels
 import scoring
 from signals.llm import score_llm
 from signals.predictability import score_predictability
 from signals.stylometry import score_stylometry
+
+# Minimum sample length (words) required to earn a provenance certificate, so
+# the detection signals have enough text to be meaningful.
+MIN_VERIFY_WORDS = 60
 
 app = Flask(__name__)
 db.init_db()
@@ -40,6 +48,36 @@ def _now_iso():
     )
 
 
+def run_pipeline(text):
+    """Run all three detection signals and combine into a scored result.
+
+    Returns (llm, stylometry, predictability, result). Predictability abstains
+    on short text (active=False); when it abstains the scorer renormalizes to
+    the two-signal weighting.
+    """
+    llm = score_llm(text)
+    stylometry = score_stylometry(text)
+    predictability = score_predictability(text)
+    pred_prob = (
+        predictability["ai_probability"] if predictability["active"] else None
+    )
+    result = scoring.score(
+        llm["ai_probability"], stylometry["ai_probability"], pred_prob
+    )
+    return llm, stylometry, predictability, result
+
+
+def valid_certificate(creator_id):
+    """Return a creator's certificate dict if present and signature-valid."""
+    cert = db.get_certificate(creator_id)
+    if cert and cert["status"] == "valid" and certificates.verify(
+        cert["creator_id"], cert["certificate_id"], cert["issued_at"],
+        cert["signature"],
+    ):
+        return cert
+    return None
+
+
 @app.route("/submit", methods=["POST"])
 @limiter.limit("10 per minute;100 per day")
 def submit():
@@ -53,24 +91,16 @@ def submit():
     content_id = str(uuid.uuid4())
     timestamp = _now_iso()
 
-    # Run all three signals, then combine into a calibrated confidence.
-    # Predictability abstains on short text (active=False); when it abstains we
-    # pass None so the scorer renormalizes to the two-signal weighting.
-    llm = score_llm(text)
-    stylometry = score_stylometry(text)
-    predictability = score_predictability(text)
-    pred_prob = (
-        predictability["ai_probability"] if predictability["active"] else None
-    )
-    result = scoring.score(
-        llm["ai_probability"],
-        stylometry["ai_probability"],
-        pred_prob,
-    )
+    llm, stylometry, predictability, result = run_pipeline(text)
 
     ai_probability = result["ai_probability"]
     attribution = result["attribution"]
     label = labels.make_label(ai_probability)
+
+    # A creator holding a valid provenance certificate gets a badge prefix.
+    verified = valid_certificate(creator_id) is not None
+    if verified:
+        label = "🏅 Verified Human Creator — " + label
 
     db.save_content(
         content_id=content_id,
@@ -96,6 +126,7 @@ def submit():
             "stylometry_metrics": stylometry["metrics"],
             "predictability_score": predictability["ai_probability"],
             "predictability_metrics": predictability["metrics"],
+            "verified_human": verified,
             "status": "classified",
         },
     )
@@ -105,6 +136,7 @@ def submit():
         "attribution": attribution,
         "confidence": ai_probability,
         "confidence_level": result["confidence_level"],
+        "verified_human": verified,
         "signals": {
             "llm": llm,
             "stylometry": stylometry,
@@ -151,6 +183,92 @@ def appeal():
         "status": "under_review",
         "message": "Your appeal has been received and the content is now "
                    "under review.",
+    })
+
+
+@app.route("/verify-human", methods=["POST"])
+def verify_human():
+    data = request.get_json(silent=True) or {}
+    creator_id = (data.get("creator_id") or "").strip()
+    sample_text = (data.get("sample_text") or "").strip()
+
+    if not creator_id or not sample_text:
+        return jsonify(
+            {"error": "creator_id and sample_text are required"}
+        ), 400
+
+    if len(sample_text.split()) < MIN_VERIFY_WORDS:
+        return jsonify({
+            "error": f"sample_text must be at least {MIN_VERIFY_WORDS} words to "
+                     "verify; please provide a longer writing sample.",
+        }), 400
+
+    # The verification gate: the live sample must score as high-confidence human.
+    _, _, _, result = run_pipeline(sample_text)
+    timestamp = _now_iso()
+
+    if result["attribution"] != "likely_human":
+        # Log the failed attempt (scores only — never the raw sample text).
+        db.write_log(
+            content_id=f"verify:{creator_id}",
+            event_type="verification",
+            timestamp=timestamp,
+            payload={
+                "creator_id": creator_id,
+                "outcome": "rejected",
+                "attribution": result["attribution"],
+                "confidence": result["ai_probability"],
+            },
+        )
+        return jsonify({
+            "verified": False,
+            "reason": "Sample did not pass human verification "
+                      f"(attribution: {result['attribution']}, "
+                      f"confidence score: {result['ai_probability']}).",
+        }), 200
+
+    # Issue a tamper-evident certificate.
+    certificate_id = str(uuid.uuid4())
+    signature = certificates.sign(creator_id, certificate_id, timestamp)
+    db.save_certificate(creator_id, certificate_id, timestamp, signature)
+    db.write_log(
+        content_id=f"verify:{creator_id}",
+        event_type="verification",
+        timestamp=timestamp,
+        payload={
+            "creator_id": creator_id,
+            "outcome": "issued",
+            "certificate_id": certificate_id,
+            "confidence": result["ai_probability"],
+        },
+    )
+    return jsonify({
+        "verified": True,
+        "creator_id": creator_id,
+        "certificate_id": certificate_id,
+        "issued_at": timestamp,
+        "signature": signature,
+        "message": "Verified Human credential issued. It will be displayed on "
+                   "your future submissions.",
+    })
+
+
+@app.route("/certificate/<creator_id>", methods=["GET"])
+def certificate(creator_id):
+    cert = db.get_certificate(creator_id)
+    if cert is None:
+        return jsonify({"creator_id": creator_id, "verified": False}), 404
+    is_valid = certificates.verify(
+        cert["creator_id"], cert["certificate_id"], cert["issued_at"],
+        cert["signature"],
+    )
+    return jsonify({
+        "creator_id": cert["creator_id"],
+        "certificate_id": cert["certificate_id"],
+        "issued_at": cert["issued_at"],
+        "status": cert["status"],
+        "verified": is_valid and cert["status"] == "valid",
+        "badge": "🏅 Verified Human Creator",
     })
 
 
