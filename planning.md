@@ -409,5 +409,23 @@ built.
    - **Additional metrics (chosen):** average confidence score (overall and per
      bucket) and the **verification issuance rate** (certificates issued vs
      rejected) — connecting the dashboard to the provenance-certificate feature.
-4. **Multi-modal support.** Accept a second `content_type` (e.g. image
-   descriptions / structured metadata) on `/submit` with a tailored signal path.
+4. **Multi-modal support.** 📋 **PLANNED — deferred to Phase 2 (product build).**
+   Design below; not yet implemented. `/submit` will accept an optional
+   `content_type` field (default `"text"` → the existing 3-signal pipeline,
+   unchanged). A second type, **`image_metadata`**, carries a `metadata` dict and
+   routes through a tailored provenance signal (`signals/metadata.py`):
+   - **C2PA / Content Credentials** — `digital_source_type:
+     "trainedAlgorithmicMedia"` or an explicit `ai_generated: true` assertion →
+     strong AI (~0.95).
+   - **Generator tool fingerprints** — `Midjourney`, `DALL·E`, `Stable
+     Diffusion`, `Adobe Firefly`, `Imagen`, etc. found in any field → ~0.9.
+   - **Camera/device EXIF present, no AI markers** → leans human (~0.15).
+   - **No markers at all** (stripped metadata) → `0.5` uncertain (metadata is
+     easily removed, so we stay honest).
+
+   Rationale: real-world image provenance lives in metadata today (the C2PA
+   standard), so this is the authentic signal a platform would check — and it is
+   pure-Python with no API calls. The `image_metadata` path reuses the same
+   scoring buckets, label generator, audit log, and certificate badge, so the
+   user-facing contract (attribution / confidence / label / appeal) is identical
+   across modalities. The audit log records `content_type`.
