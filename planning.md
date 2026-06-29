@@ -359,10 +359,25 @@ and how output is verified.
 All four planned; `planning.md` will be updated with specifics before each is
 built.
 
-1. **Ensemble detection (3+ signals).** Add a third signal — an n-gram /
-   repetition-regularity detector (e.g. proportion of repeated bigrams, a
-   proxy for the low "perplexity" of AI text) — and document a weighted vote:
-   e.g. `0.50*LLM + 0.30*stylometry + 0.20*repetition`.
+1. **Ensemble detection (3+ signals).** ✅ **BUILT.** Adds a third signal —
+   **Signal 3: Predictability** (`signals/predictability.py`) — a pure-Python
+   proxy for the low "perplexity" of AI text, combining two sub-metrics:
+   - **Compression ratio** (`zlib`): `len(compressed)/len(original)`. More
+     predictable/repetitive text compresses better → lower ratio → more AI-like.
+   - **Distinct n-gram ratio** (bigram + trigram diversity): repetitive phrasing
+     yields fewer distinct n-grams → more AI-like.
+   Both capture information redundancy that neither the semantic LLM nor the
+   surface stylometric metrics directly measure (compression-based detection is
+   an established technique). Same short-text damping as stylometry.
+
+   **Weighted vote** (in `scoring.py`): when all three signals are present,
+   ```
+   combined = 0.50*LLM + 0.30*stylometry + 0.20*predictability
+   ```
+   The LLM stays dominant; predictability carries the least weight (it is the
+   noisiest) but breaks ties when the other two disagree. The 2-signal weighting
+   (`0.65*LLM + 0.35*stylometry`) is retained as a fallback when only two signals
+   are available. Thresholds (0.40 / 0.75) are unchanged.
 2. **Provenance certificate.** A `POST /verify-human` step that grants a
    creator a "Verified Human" credential (stored, displayed on their content via
    the label), earned through an extra verification action.

@@ -17,6 +17,7 @@ import db
 import labels
 import scoring
 from signals.llm import score_llm
+from signals.predictability import score_predictability
 from signals.stylometry import score_stylometry
 
 app = Flask(__name__)
@@ -52,10 +53,20 @@ def submit():
     content_id = str(uuid.uuid4())
     timestamp = _now_iso()
 
-    # Run both signals, then combine into a calibrated confidence.
+    # Run all three signals, then combine into a calibrated confidence.
+    # Predictability abstains on short text (active=False); when it abstains we
+    # pass None so the scorer renormalizes to the two-signal weighting.
     llm = score_llm(text)
     stylometry = score_stylometry(text)
-    result = scoring.score(llm["ai_probability"], stylometry["ai_probability"])
+    predictability = score_predictability(text)
+    pred_prob = (
+        predictability["ai_probability"] if predictability["active"] else None
+    )
+    result = scoring.score(
+        llm["ai_probability"],
+        stylometry["ai_probability"],
+        pred_prob,
+    )
 
     ai_probability = result["ai_probability"]
     attribution = result["attribution"]
@@ -83,6 +94,8 @@ def submit():
             "llm_rationale": llm["rationale"],
             "stylometry_score": stylometry["ai_probability"],
             "stylometry_metrics": stylometry["metrics"],
+            "predictability_score": predictability["ai_probability"],
+            "predictability_metrics": predictability["metrics"],
             "status": "classified",
         },
     )
@@ -92,7 +105,11 @@ def submit():
         "attribution": attribution,
         "confidence": ai_probability,
         "confidence_level": result["confidence_level"],
-        "signals": {"llm": llm, "stylometry": stylometry},
+        "signals": {
+            "llm": llm,
+            "stylometry": stylometry,
+            "predictability": predictability,
+        },
         "label": label,
     })
 
