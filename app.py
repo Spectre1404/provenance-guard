@@ -12,7 +12,9 @@ from datetime import datetime, timezone
 from flask import Flask, jsonify, request
 
 import db
+import scoring
 from signals.llm import score_llm
+from signals.stylometry import score_stylometry
 
 app = Flask(__name__)
 db.init_db()
@@ -23,17 +25,6 @@ def _now_iso():
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace(
         "+00:00", "Z"
     )
-
-
-# --- Placeholder scoring/label for M3; replaced by real logic in M4/M5. ---
-
-def _placeholder_attribution(ai_probability):
-    """Temporary bucket mapping until M4 adds calibrated scoring."""
-    if ai_probability >= 0.75:
-        return "likely_ai"
-    if ai_probability < 0.40:
-        return "likely_human"
-    return "uncertain"
 
 
 @app.route("/submit", methods=["POST"])
@@ -48,11 +39,13 @@ def submit():
     content_id = str(uuid.uuid4())
     timestamp = _now_iso()
 
-    # Signal 1 only for now.
+    # Run both signals, then combine into a calibrated confidence.
     llm = score_llm(text)
-    ai_probability = llm["ai_probability"]
-    attribution = _placeholder_attribution(ai_probability)
-    confidence = ai_probability  # placeholder; real calibration in M4
+    stylometry = score_stylometry(text)
+    result = scoring.score(llm["ai_probability"], stylometry["ai_probability"])
+
+    ai_probability = result["ai_probability"]
+    attribution = result["attribution"]
     label = "(placeholder label — full transparency label arrives in M5)"
 
     db.save_content(
@@ -60,7 +53,7 @@ def submit():
         creator_id=creator_id,
         text=text,
         attribution=attribution,
-        confidence=confidence,
+        confidence=ai_probability,
         status="classified",
         created_at=timestamp,
     )
@@ -71,9 +64,12 @@ def submit():
         payload={
             "creator_id": creator_id,
             "attribution": attribution,
-            "confidence": round(confidence, 4),
+            "confidence": ai_probability,
+            "confidence_level": result["confidence_level"],
             "llm_score": round(llm["ai_probability"], 4),
             "llm_rationale": llm["rationale"],
+            "stylometry_score": stylometry["ai_probability"],
+            "stylometry_metrics": stylometry["metrics"],
             "status": "classified",
         },
     )
@@ -81,8 +77,9 @@ def submit():
     return jsonify({
         "content_id": content_id,
         "attribution": attribution,
-        "confidence": round(confidence, 4),
-        "signals": {"llm": llm},
+        "confidence": ai_probability,
+        "confidence_level": result["confidence_level"],
+        "signals": {"llm": llm, "stylometry": stylometry},
         "label": label,
     })
 

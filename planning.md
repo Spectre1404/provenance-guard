@@ -148,28 +148,36 @@ agreement is more informative than either alone.
 
 ### Signal 2 — Stylometric heuristics (structural)
 
-Pure-Python statistics, no external libraries. We compute three metrics and
-combine them into a single structural `ai_probability`:
+Pure-Python statistics, no external libraries. We compute **six metrics** across
+three families (rhythm, vocabulary, voice), normalize each to a 0–1
+"AI-likeness" sub-score against rough human/AI reference ranges, then combine via
+a weighted average into a single structural `ai_probability`. The reference
+ranges are **heuristic, not trained** — they encode tendencies, not a learned
+model.
 
-1. **Sentence-length variance / burstiness** — std-dev of sentence lengths.
-   Human writing is "bursty" (mixes short and long sentences); AI text is more
-   uniform. Low variance → more AI-like.
-2. **Type-token ratio (TTR)** — unique words ÷ total words = vocabulary
-   diversity. Very smooth, mid-range diversity is AI-typical; humans skew either
-   repetitive (casual) or highly varied. Used as a moderate contributor.
-3. **Punctuation density** — punctuation marks ÷ words. Humans use more varied
-   and dense punctuation (dashes, ellipses, parentheses, exclamation). Very low
-   density → more AI-like.
+| # | Metric (family) | What it captures | Direction | Weight |
+|---|---|---|---|---|
+| 1 | **Sentence-length burstiness** — coeff. of variation of words/sentence (rhythm) | Humans mix short & long sentences; AI is even | low CV → AI-like | 0.22 |
+| 2 | **Type-token ratio** — unique/total words (vocabulary) | Vocabulary diversity | mid-range (~0.6) → AI-like | 0.12 |
+| 3 | **Punctuation variety** — count of *distinct* mark types used (vocabulary) | Humans punctuate richly (– … ; : ( ) ! ?); AI leans comma/period | low variety → AI-like | 0.12 |
+| 4 | **AI-marker lexical density** — rate of overused AI words per 100w (*furthermore, delve, crucial, "it is important to note", tapestry, leverage, seamless, realm, underscore…*) (voice) | The AI "register" | high → AI-like | 0.24 |
+| 5 | **Human-voice markers** — rate of contractions + casual fillers per 100w (*honestly, kinda, ok so, like, i mean…*) (voice) | Casual human idiosyncrasy | high → human-like (lowers AI score) | 0.20 |
+| 6 | **Sentence-opener diversity** — unique first-words ÷ sentences (rhythm) | AI starts sentences formulaically | low → AI-like | 0.10 |
 
-- **Output:** `{ai_probability: float 0–1, metrics: {variance, ttr, punct_density}}`.
-  Each metric is normalized to a 0–1 "AI-likeness" sub-score against rough
-  human/AI reference ranges, then averaged.
-- **Why it differs human vs AI:** AI optimizes for fluent uniformity; humans are
-  statistically irregular.
-- **Blind spot:** **Completely blind to meaning.** Unstable on short texts
-  (< ~3 sentences). A deliberately uniform human (legal, academic, technical)
-  scores AI-like; a chaotic AI prompt-hack could score human-like. This is why
-  stylometry gets the lower weight (0.35) and never decides alone.
+- **Output:** `{ai_probability: float 0–1, metrics: {burstiness_cv,
+  type_token_ratio, punct_variety, ai_markers_per_100w, human_markers_per_100w,
+  opener_diversity, sentence_count, short_text_damped}}`.
+- **Why it differs human vs AI:** AI optimizes for fluent uniformity and a
+  characteristic register; humans are statistically irregular and idiosyncratic.
+  Metrics 4 & 5 (lexical tells) and 1 (rhythm) are the strongest discriminators
+  and carry the most weight.
+- **Short-text damping:** with fewer than 3 sentences the rhythm/diversity stats
+  are unreliable, so the combined stylometry score is pulled proportionally
+  toward 0.5 (uncertain) rather than trusting a noisy statistic.
+- **Blind spot:** **Completely blind to meaning.** A deliberately uniform human
+  (legal, academic, technical) scores AI-like; a chaotic AI prompt-hack could
+  score human-like; the AI-marker list can be gamed by avoiding those words.
+  This is why stylometry gets the lower weight (0.35) and never decides alone.
 
 ### Combination
 
