@@ -396,8 +396,18 @@ built.
    - **Storage / privacy:** a `certificates` table stores
      `creator_id, certificate_id, issued_at, signature, status` — never the raw
      verification sample text.
-3. **Analytics dashboard.** A `GET /analytics` view aggregating from SQLite:
-   distribution of attributions, appeal rate, and one more metric (e.g. average
-   confidence over time or per creator).
+3. **Analytics dashboard.** ✅ **BUILT.** Aggregates from SQLite (`analytics.py`)
+   and is surfaced two ways:
+   - **`GET /analytics`** — the aggregated metrics as JSON (canonical data).
+   - **`GET /dashboard`** — a lightweight, self-contained HTML page (no external
+     libraries; inline CSS + simple bars) rendering the same metrics.
+
+   Metrics shown:
+   - **Detection patterns:** count and percentage per attribution bucket
+     (`likely_ai` / `uncertain` / `likely_human`) plus total classifications.
+   - **Appeal rate:** appeals ÷ classifications (%).
+   - **Additional metrics (chosen):** average confidence score (overall and per
+     bucket) and the **verification issuance rate** (certificates issued vs
+     rejected) — connecting the dashboard to the provenance-certificate feature.
 4. **Multi-modal support.** Accept a second `content_type` (e.g. image
    descriptions / structured metadata) on `/submit` with a tailored signal path.

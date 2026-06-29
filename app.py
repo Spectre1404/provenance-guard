@@ -16,6 +16,7 @@ from flask import Flask, jsonify, request
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 
+import analytics
 import certificates
 import db
 import labels
@@ -65,6 +66,79 @@ def run_pipeline(text):
         llm["ai_probability"], stylometry["ai_probability"], pred_prob
     )
     return llm, stylometry, predictability, result
+
+
+_BUCKET_COLORS = {
+    "likely_ai": "#d9534f",
+    "uncertain": "#f0ad4e",
+    "likely_human": "#5cb85c",
+}
+
+
+def _render_dashboard(a):
+    """Render the analytics dict as a self-contained HTML page (no external libs)."""
+    dp = a["detection_patterns"]
+    rows = ""
+    for bucket, color in _BUCKET_COLORS.items():
+        d = dp[bucket]
+        avg = d["avg_confidence"] if d["avg_confidence"] is not None else "—"
+        rows += f"""
+        <div class="row">
+          <div class="lbl">{bucket}</div>
+          <div class="bar-wrap">
+            <div class="bar" style="width:{d['percent']}%;background:{color}"></div>
+          </div>
+          <div class="num">{d['count']} ({d['percent']}%) · avg {avg}</div>
+        </div>"""
+
+    ver = a["verification"]
+    return f"""<!doctype html>
+<html><head><meta charset="utf-8"><title>Provenance Guard — Analytics</title>
+<style>
+  body {{ font-family: -apple-system, system-ui, sans-serif; max-width: 720px;
+          margin: 40px auto; padding: 0 16px; color: #222; }}
+  h1 {{ font-size: 22px; }} h2 {{ font-size: 15px; color: #555;
+        margin-top: 28px; text-transform: uppercase; letter-spacing: .5px; }}
+  .card {{ border: 1px solid #e3e3e3; border-radius: 10px; padding: 18px;
+           margin-top: 10px; }}
+  .row {{ display: flex; align-items: center; gap: 10px; margin: 8px 0; }}
+  .lbl {{ width: 120px; font-size: 13px; }}
+  .bar-wrap {{ flex: 1; background: #f0f0f0; border-radius: 4px; height: 18px; }}
+  .bar {{ height: 18px; border-radius: 4px; min-width: 2px; }}
+  .num {{ width: 190px; font-size: 12px; color: #444; text-align: right; }}
+  .big {{ font-size: 30px; font-weight: 700; }}
+  .stat {{ display: inline-block; margin-right: 36px; }}
+  .sub {{ font-size: 12px; color: #888; }}
+</style></head><body>
+  <h1>Provenance Guard — Analytics Dashboard</h1>
+
+  <h2>Detection patterns</h2>
+  <div class="card">
+    {rows}
+    <div class="sub" style="margin-top:10px">
+      Total classifications: {a['total_classifications']} ·
+      Overall avg confidence: {a['avg_confidence_overall']}
+    </div>
+  </div>
+
+  <h2>Appeals</h2>
+  <div class="card">
+    <div class="stat"><div class="big">{a['appeals']['count']}</div>
+      <div class="sub">appeals filed</div></div>
+    <div class="stat"><div class="big">{a['appeals']['appeal_rate_percent']}%</div>
+      <div class="sub">appeal rate</div></div>
+  </div>
+
+  <h2>Verification (Verified Human)</h2>
+  <div class="card">
+    <div class="stat"><div class="big">{ver['issued']}</div>
+      <div class="sub">issued</div></div>
+    <div class="stat"><div class="big">{ver['rejected']}</div>
+      <div class="sub">rejected</div></div>
+    <div class="stat"><div class="big">{ver['issuance_rate_percent']}%</div>
+      <div class="sub">issuance rate</div></div>
+  </div>
+</body></html>"""
 
 
 def valid_certificate(creator_id):
@@ -270,6 +344,16 @@ def certificate(creator_id):
         "verified": is_valid and cert["status"] == "valid",
         "badge": "🏅 Verified Human Creator",
     })
+
+
+@app.route("/analytics", methods=["GET"])
+def analytics_json():
+    return jsonify(analytics.compute_analytics())
+
+
+@app.route("/dashboard", methods=["GET"])
+def dashboard():
+    return _render_dashboard(analytics.compute_analytics())
 
 
 @app.route("/log", methods=["GET"])
