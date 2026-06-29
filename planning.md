@@ -73,6 +73,53 @@ content's status flips to `under_review`, the appeal is logged alongside the
 original decision, and a confirmation is returned — a human reviewer can later
 read the original signals plus the creator's reasoning from the audit log.
 
+### Project Structure (modules)
+
+The code is split into small modules so each implementation milestone is a
+drop-in addition rather than a rewrite of one large file.
+
+```
+provenance-guard/
+├── app.py              # Flask app + all routes (/submit, /log, later /appeal …)
+├── db.py               # SQLite store + structured audit log helpers
+├── signals/
+│   ├── __init__.py
+│   ├── llm.py          # Signal 1 — Groq LLM classification (semantic)
+│   ├── stylometry.py   # Signal 2 — stylometric heuristics  (added in M4)
+│   └── repetition.py   # Signal 3 — n-gram/repetition detector (stretch)
+├── scoring.py          # Confidence combination + bucket mapping (added in M4)
+├── labels.py           # Transparency label generation (added in M5)
+├── requirements.txt
+├── planning.md
+└── README.md
+```
+
+**Module responsibilities:**
+
+- **`db.py`** — owns all persistence via SQLite (`provenance.db`). Two tables:
+  `content` (one row per submission: current `status`, attribution, confidence)
+  and `audit_log` (append-only structured events). Public helpers: `init_db`,
+  `save_content`, `get_content`, `update_status`, `write_log`, `get_log`. The
+  audit log is append-only by design — an appeal adds a new event rather than
+  overwriting the original classification.
+- **`signals/llm.py`** — Signal 1. `score_llm(text)` calls
+  `llama-3.3-70b-versatile` via Groq with a JSON-only system prompt and returns
+  `{"ai_probability": float, "rationale": str}`. Uses `temperature=0` and
+  `response_format=json_object` for stable, parseable output; on any API/parse
+  error it **degrades gracefully** to a neutral `0.5` ("uncertain") instead of
+  crashing the request. Runnable standalone (`python -m signals.llm`) for
+  inspection before wiring into the endpoint.
+- **`app.py`** — the Flask application and route handlers. Generates the
+  `content_id` (UUID4), produces an ISO-8601 UTC timestamp, calls the signal(s),
+  persists to `db`, and returns the structured JSON response. In M3 the
+  confidence is a placeholder (raw LLM score) and the label is a placeholder
+  string; these are replaced by `scoring.py` (M4) and `labels.py` (M5).
+
+> **M3 placeholders (intentional):** until M4/M5 land, `/submit` returns the raw
+> LLM score as `confidence` and a literal placeholder `label` string. This lets
+> the endpoint, persistence, and audit log be verified end-to-end with one signal
+> before scoring and labels are built on top.
+
 ---
 
 ## 1. Detection Signals
